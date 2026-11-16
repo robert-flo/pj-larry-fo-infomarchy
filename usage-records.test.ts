@@ -23,7 +23,7 @@ test("an agent that sorts after twenty unused ones still reaches the desk", asyn
   for (let i = 0; i < 22; i++) writeFileSync(join(usage, `agent${String(i).padStart(2, "0")}.json`), JSON.stringify(idle(`agent${i}`)));
   writeFileSync(join(usage, "zai.json"), JSON.stringify({ ...idle("zai"), name: "Z.ai", ready: true, todayPrompts: 3, totalPrompts: 40 }));
   const proc = Bun.spawn([process.execPath, "--preload", join(import.meta.dir, "tests/collector-offline.ts"), join(import.meta.dir, "collector.ts"), "--id", "bg"], {
-    env: { HOME: root, XDG_STATE_HOME: join(root, "state"), PATH: "/nonexistent", INFOMARCHY_SKIP_GITHUB: "1", INFOMARCHY_SKIP_EXTERNAL_IP: "1" }, stdout: "pipe", stderr: "pipe",
+    env: { HOME: root, XDG_STATE_HOME: join(root, "state"), PATH: "/nonexistent", INFOMARCHY_SKIP_GITHUB: "1", INFOMARCHY_SKIP_GIT_REFRESH: "1", INFOMARCHY_SKIP_EXTERNAL_IP: "1" }, stdout: "pipe", stderr: "pipe",
   });
   const output = await new Response(proc.stdout).text();
   expect(await proc.exited).toBe(0);

@@ -538,7 +538,7 @@ describe("prev.json instance files", () => {
 
     async function collect(id: string) {
       const proc = Bun.spawn([process.execPath, join(import.meta.dir, "collector.ts"), "--id", id], {
-        env: { HOME: fixture, USER: "tester", XDG_STATE_HOME: state, PATH: process.env.PATH || "", INFOMARCHY_SKIP_EXTERNAL_IP: "1", INFOMARCHY_SKIP_GITHUB: "1", INFOMARCHY_SKIP_CONTAINERS: "1" },
+        env: { HOME: fixture, USER: "tester", XDG_STATE_HOME: state, PATH: process.env.PATH || "", INFOMARCHY_SKIP_EXTERNAL_IP: "1", INFOMARCHY_SKIP_GITHUB: "1", INFOMARCHY_SKIP_GIT_REFRESH: "1", INFOMARCHY_SKIP_CONTAINERS: "1" },
         stdout: "pipe",
         stderr: "pipe",
       });
@@ -578,7 +578,7 @@ describe("history collection", () => {
     ].join("\n"));
 
     const proc = Bun.spawn([process.execPath, join(import.meta.dir, "collector.ts")], {
-      env: { HOME: historyFixture, USER: "tester", XDG_STATE_HOME: join(historyFixture, "state"), PATH: process.env.PATH || "", INFOMARCHY_SKIP_EXTERNAL_IP: "1", INFOMARCHY_SKIP_GITHUB: "1", INFOMARCHY_SKIP_CONTAINERS: "1" },
+      env: { HOME: historyFixture, USER: "tester", XDG_STATE_HOME: join(historyFixture, "state"), PATH: process.env.PATH || "", INFOMARCHY_SKIP_EXTERNAL_IP: "1", INFOMARCHY_SKIP_GITHUB: "1", INFOMARCHY_SKIP_GIT_REFRESH: "1", INFOMARCHY_SKIP_CONTAINERS: "1" },
       stdout: "pipe",
       stderr: "pipe",
     });
@@ -614,7 +614,7 @@ describe("history collection", () => {
     const home = join(testRoot, "grok-home-empty");
     mkdirSync(home, { recursive: true });
     const proc = Bun.spawn([process.execPath, join(import.meta.dir, "collector.ts")], {
-      env: { HOME: home, USER: "tester", GROK_HOME: root, XDG_STATE_HOME: join(home, "state"), PATH: process.env.PATH || "", INFOMARCHY_SKIP_EXTERNAL_IP: "1", INFOMARCHY_SKIP_GITHUB: "1", INFOMARCHY_SKIP_CONTAINERS: "1" },
+      env: { HOME: home, USER: "tester", GROK_HOME: root, XDG_STATE_HOME: join(home, "state"), PATH: process.env.PATH || "", INFOMARCHY_SKIP_EXTERNAL_IP: "1", INFOMARCHY_SKIP_GITHUB: "1", INFOMARCHY_SKIP_GIT_REFRESH: "1", INFOMARCHY_SKIP_CONTAINERS: "1" },
       stdout: "pipe",
       stderr: "pipe",
     });
@@ -659,7 +659,7 @@ describe("history collection", () => {
     const home = join(testRoot, "hermes-empty-home");
     mkdirSync(home, { recursive: true });
     const proc = Bun.spawn(["bun", join(import.meta.dir, "collector.ts")], {
-      env: { HOME: home, USER: "tester", HERMES_HOME: hermesHome, XDG_STATE_HOME: join(home, "state"), PATH: process.env.PATH || "", INFOMARCHY_SKIP_EXTERNAL_IP: "1", INFOMARCHY_SKIP_GITHUB: "1" },
+      env: { HOME: home, USER: "tester", HERMES_HOME: hermesHome, XDG_STATE_HOME: join(home, "state"), PATH: process.env.PATH || "", INFOMARCHY_SKIP_EXTERNAL_IP: "1", INFOMARCHY_SKIP_GITHUB: "1", INFOMARCHY_SKIP_GIT_REFRESH: "1" },
       stdout: "pipe",
       stderr: "pipe",
     });
@@ -708,7 +708,7 @@ describe("history collection", () => {
     }));
 
     const proc = Bun.spawn([process.execPath, join(import.meta.dir, "collector.ts")], {
-      env: { HOME: root, USER: "tester", XDG_STATE_HOME: join(root, "state"), PATH: process.env.PATH || "", INFOMARCHY_SKIP_EXTERNAL_IP: "1", INFOMARCHY_SKIP_GITHUB: "1", INFOMARCHY_SKIP_CONTAINERS: "1" },
+      env: { HOME: root, USER: "tester", XDG_STATE_HOME: join(root, "state"), PATH: process.env.PATH || "", INFOMARCHY_SKIP_EXTERNAL_IP: "1", INFOMARCHY_SKIP_GITHUB: "1", INFOMARCHY_SKIP_GIT_REFRESH: "1", INFOMARCHY_SKIP_CONTAINERS: "1" },
       stdout: "pipe",
       stderr: "pipe",
     });
@@ -739,7 +739,7 @@ describe("history collection", () => {
     db.close();
 
     const proc = Bun.spawn([process.execPath, join(import.meta.dir, "collector.ts")], {
-      env: { HOME: root, USER: "tester", XDG_DATA_HOME: data, XDG_STATE_HOME: join(root, "state"), PATH: process.env.PATH || "", INFOMARCHY_SKIP_EXTERNAL_IP: "1", INFOMARCHY_SKIP_GITHUB: "1", INFOMARCHY_SKIP_CONTAINERS: "1" },
+      env: { HOME: root, USER: "tester", XDG_DATA_HOME: data, XDG_STATE_HOME: join(root, "state"), PATH: process.env.PATH || "", INFOMARCHY_SKIP_EXTERNAL_IP: "1", INFOMARCHY_SKIP_GITHUB: "1", INFOMARCHY_SKIP_GIT_REFRESH: "1", INFOMARCHY_SKIP_CONTAINERS: "1" },
       stdout: "pipe",
       stderr: "pipe",
     });
@@ -775,7 +775,7 @@ describe("history collection", () => {
     ].join("\n") + "\n");
 
     const proc = Bun.spawn([process.execPath, join(import.meta.dir, "collector.ts")], {
-      env: { HOME: root, USER: "tester", XDG_STATE_HOME: join(root, "state"), PATH: "/usr/bin:/bin", INFOMARCHY_SKIP_EXTERNAL_IP: "1", INFOMARCHY_SKIP_CONTAINERS: "1", INFOMARCHY_SKIP_GITHUB: "1" },
+      env: { HOME: root, USER: "tester", XDG_STATE_HOME: join(root, "state"), PATH: "/usr/bin:/bin", INFOMARCHY_SKIP_EXTERNAL_IP: "1", INFOMARCHY_SKIP_CONTAINERS: "1", INFOMARCHY_SKIP_GITHUB: "1", INFOMARCHY_SKIP_GIT_REFRESH: "1" },
       stdout: "pipe",
       stderr: "pipe",
     });
@@ -978,7 +978,7 @@ describe("Grok per-turn usage in a real collector run", () => {
   const todayAt = (i: number) => Math.min(dayStart() + i * 1000, Date.now());
   async function run(root: string): Promise<any> {
     const proc = Bun.spawn([process.execPath, join(import.meta.dir, "collector.ts")], {
-      env: { TZ: "UTC", HOME: root, USER: "tester", GROK_HOME: join(root, ".grok"), XDG_STATE_HOME: join(root, "state"), PATH: process.env.PATH || "", INFOMARCHY_SKIP_EXTERNAL_IP: "1", INFOMARCHY_SKIP_GITHUB: "1", INFOMARCHY_SKIP_CONTAINERS: "1" },
+      env: { TZ: "UTC", HOME: root, USER: "tester", GROK_HOME: join(root, ".grok"), XDG_STATE_HOME: join(root, "state"), PATH: process.env.PATH || "", INFOMARCHY_SKIP_EXTERNAL_IP: "1", INFOMARCHY_SKIP_GITHUB: "1", INFOMARCHY_SKIP_GIT_REFRESH: "1", INFOMARCHY_SKIP_CONTAINERS: "1" },
       stdout: "pipe", stderr: "pipe",
     });
     const snap = decodeFrames(await new Response(proc.stdout).text());
@@ -1463,7 +1463,7 @@ describe("second-reviewer findings (2026-09-04)", () => {
     try {
       const proc = Bun.spawn([process.execPath, join(import.meta.dir, "collector.ts"), "--id", "bigsnap"], {
         stdout: "pipe", stderr: "ignore",
-        env: { HOME: home, USER: "tester", XDG_STATE_HOME: join(home, "state"), PATH: process.env.PATH || "", INFOMARCHY_SKIP_EXTERNAL_IP: "1", INFOMARCHY_SKIP_GITHUB: "1", INFOMARCHY_SKIP_CONTAINERS: "1", OLLAMA_HOST: "http://127.0.0.1:9" },
+        env: { HOME: home, USER: "tester", XDG_STATE_HOME: join(home, "state"), PATH: process.env.PATH || "", INFOMARCHY_SKIP_EXTERNAL_IP: "1", INFOMARCHY_SKIP_GITHUB: "1", INFOMARCHY_SKIP_GIT_REFRESH: "1", INFOMARCHY_SKIP_CONTAINERS: "1", OLLAMA_HOST: "http://127.0.0.1:9" },
       });
       const output = await new Response(proc.stdout).text();
       await proc.exited;
@@ -2177,7 +2177,7 @@ describe("Cursor", () => {
     const home = join(testRoot, "cursor-home-empty");
     mkdirSync(home, { recursive: true });
     const proc = Bun.spawn(["bun", join(import.meta.dir, "collector.ts")], {
-      env: { HOME: home, USER: "tester", CURSOR_HOME: root, XDG_STATE_HOME: join(home, "state"), PATH: process.env.PATH || "", INFOMARCHY_SKIP_EXTERNAL_IP: "1", INFOMARCHY_SKIP_GITHUB: "1" },
+      env: { HOME: home, USER: "tester", CURSOR_HOME: root, XDG_STATE_HOME: join(home, "state"), PATH: process.env.PATH || "", INFOMARCHY_SKIP_EXTERNAL_IP: "1", INFOMARCHY_SKIP_GITHUB: "1", INFOMARCHY_SKIP_GIT_REFRESH: "1" },
       stdout: "pipe",
       stderr: "pipe",
     });
@@ -2264,7 +2264,7 @@ describe("outbound usage gate in a real collector run", () => {
   const collect = async (args: string[], env: Record<string, string>) => {
     const proc = Bun.spawn([process.execPath, join(import.meta.dir, "collector.ts"), ...args], {
       env: { HOME: home, USER: "tester", XDG_STATE_HOME: join(home, "state"), OMARCHY_PATH: join(root, "no-omarchy"), PATH: `${fakeBin}:/usr/bin:/bin`,
-        INFOMARCHY_SKIP_EXTERNAL_IP: "1", INFOMARCHY_SKIP_GITHUB: "1", INFOMARCHY_SKIP_CONTAINERS: "1", ...env },
+        INFOMARCHY_SKIP_EXTERNAL_IP: "1", INFOMARCHY_SKIP_GITHUB: "1", INFOMARCHY_SKIP_GIT_REFRESH: "1", INFOMARCHY_SKIP_CONTAINERS: "1", ...env },
       stdout: "pipe", stderr: "pipe",
     });
     await new Response(proc.stdout).text();
@@ -2316,7 +2316,7 @@ describe("container snapshot", () => {
     const home = join(testRoot, "demo-home");
     mkdirSync(join(home, "state"), { recursive: true });
     const proc = Bun.spawn([process.execPath, join(import.meta.dir, "collector.ts"), "--demo"], {
-      env: { HOME: home, USER: "tester", XDG_STATE_HOME: join(home, "state"), PATH: process.env.PATH || "", INFOMARCHY_SKIP_EXTERNAL_IP: "1", INFOMARCHY_SKIP_GITHUB: "1", INFOMARCHY_SKIP_CONTAINERS: "1" },
+      env: { HOME: home, USER: "tester", XDG_STATE_HOME: join(home, "state"), PATH: process.env.PATH || "", INFOMARCHY_SKIP_EXTERNAL_IP: "1", INFOMARCHY_SKIP_GITHUB: "1", INFOMARCHY_SKIP_GIT_REFRESH: "1", INFOMARCHY_SKIP_CONTAINERS: "1" },
       stdout: "pipe",
       stderr: "pipe",
     });
@@ -2632,7 +2632,7 @@ describe("Muse session history", () => {
     writeFileSync(join(day, ".msp-view-g6", "session.jsonl"), JSON.stringify(intent("hidden prompt", now)) + "\n");
 
     const proc = Bun.spawn([process.execPath, join(import.meta.dir, "collector.ts")], {
-      env: { HOME: root, USER: "tester", XDG_STATE_HOME: join(root, "state"), PATH: "/usr/bin:/bin", INFOMARCHY_SKIP_EXTERNAL_IP: "1", INFOMARCHY_SKIP_CONTAINERS: "1", INFOMARCHY_SKIP_GITHUB: "1" },
+      env: { HOME: root, USER: "tester", XDG_STATE_HOME: join(root, "state"), PATH: "/usr/bin:/bin", INFOMARCHY_SKIP_EXTERNAL_IP: "1", INFOMARCHY_SKIP_CONTAINERS: "1", INFOMARCHY_SKIP_GITHUB: "1", INFOMARCHY_SKIP_GIT_REFRESH: "1" },
       stdout: "pipe",
       stderr: "pipe",
     });
@@ -2650,7 +2650,7 @@ describe("Muse session history", () => {
     const root = join(testRoot, "muse-none");
     mkdirSync(root, { recursive: true });
     const proc = Bun.spawn([process.execPath, join(import.meta.dir, "collector.ts")], {
-      env: { HOME: root, USER: "tester", XDG_STATE_HOME: join(root, "state"), PATH: "/usr/bin:/bin", INFOMARCHY_SKIP_EXTERNAL_IP: "1", INFOMARCHY_SKIP_CONTAINERS: "1", INFOMARCHY_SKIP_GITHUB: "1" },
+      env: { HOME: root, USER: "tester", XDG_STATE_HOME: join(root, "state"), PATH: "/usr/bin:/bin", INFOMARCHY_SKIP_EXTERNAL_IP: "1", INFOMARCHY_SKIP_CONTAINERS: "1", INFOMARCHY_SKIP_GITHUB: "1", INFOMARCHY_SKIP_GIT_REFRESH: "1" },
       stdout: "pipe",
       stderr: "pipe",
     });

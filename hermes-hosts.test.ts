@@ -223,7 +223,7 @@ describe("the shipped collector", () => {
   async function snapshot(args: string[], extra: Record<string, string>) {
     const proc = Bun.spawn([process.execPath, "--preload", join(import.meta.dir, "tests/collector-offline.ts"), join(import.meta.dir, "collector.ts"), ...args], {
       // PATH has no ssh, so a configured host can only come back unreachable. No network is touched.
-      env: { HOME: root, XDG_STATE_HOME: join(root, "state"), PATH: "/nonexistent", INFOMARCHY_SKIP_GITHUB: "1", INFOMARCHY_SKIP_EXTERNAL_IP: "1", ...extra }, stdout: "pipe", stderr: "pipe",
+      env: { HOME: root, XDG_STATE_HOME: join(root, "state"), PATH: "/nonexistent", INFOMARCHY_SKIP_GITHUB: "1", INFOMARCHY_SKIP_GIT_REFRESH: "1", INFOMARCHY_SKIP_EXTERNAL_IP: "1", ...extra }, stdout: "pipe", stderr: "pipe",
     });
     const output = await new Response(proc.stdout).text();
     expect(await proc.exited).toBe(0);

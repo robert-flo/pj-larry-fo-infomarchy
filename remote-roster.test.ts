@@ -94,7 +94,7 @@ test("overlay and wallpaper read the file; demo remains isolated", async () => {
   const path = join(root, "overlay.json"); writeFileSync(path, doc([row("ara"), row("max")]));
   for (const [args, source] of [[["--id", "overlay"], path], [["--id", "bg"], path], [["--demo"], path], [["--id", "overlay"], ""], [["--id", "overlay"], join(root, "missing")]] as [string[], string][]) {
     const proc = Bun.spawn([process.execPath, "--preload", join(import.meta.dir, "tests/collector-offline.ts"), join(import.meta.dir, "collector.ts"), ...args], {
-      env: { HOME: root, XDG_STATE_HOME: join(root, "state"), PATH: "/nonexistent", INFOMARCHY_SKIP_GITHUB: "1", INFOMARCHY_SKIP_EXTERNAL_IP: "1", INFOMARCHY_REMOTE_ROSTER: source, INFOMARCHY_REMOTE_WORKSPACE: "10" }, stdout: "pipe", stderr: "pipe",
+      env: { HOME: root, XDG_STATE_HOME: join(root, "state"), PATH: "/nonexistent", INFOMARCHY_SKIP_GITHUB: "1", INFOMARCHY_SKIP_GIT_REFRESH: "1", INFOMARCHY_SKIP_EXTERNAL_IP: "1", INFOMARCHY_REMOTE_ROSTER: source, INFOMARCHY_REMOTE_WORKSPACE: "10" }, stdout: "pipe", stderr: "pipe",
     });
     const output = await new Response(proc.stdout).text();
     expect(await proc.exited).toBe(0);

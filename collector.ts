@@ -25,6 +25,12 @@ import { demoHermesHosts, hermesHostsEnabled, hermesHostsFromEnv, hermesHostsRef
 import { hermesUsageRefreshDue, hermesUsageSummary, parseHermesUsageStoreText, refreshHermesUsage } from "./hermes-usage";
 import { validOrcaHandle } from "./orca-focus";
 import { fleetSessionsEnabled, fleetSessionsPayload, fleetSessionsRefreshDue, mergeFleetSessions, parseFleetSessionStoreText, refreshFleetSessions } from "./fleet-sessions";
+import {
+  GIT_CAP_LOCAL, GIT_CAP_NET, GIT_ORIGIN_RECHECK_MS, GIT_STATUS_TIMEOUT_LOCAL_MS, GIT_STATUS_TIMEOUT_NET_MS, GIT_WORKER_MAX_MS, GIT_WORKER_WIND_DOWN_MS,
+  createLimiter, emptyGitEntry, gitCacheVerdict, gitStamp, gitWorkerAlive, isNetworkPath, locateGit, parseGitCache, parseGitWant, parseMountInfo,
+  planGitRefresh, pruneGitCache, runPool,
+  type GitCache, type GitEntry, type MountPoint,
+} from "./git-cache";
 
 const HOME = process.env.HOME || "/root";
 const XDG_STATE = process.env.XDG_STATE_HOME || join(HOME, ".local/state");
@@ -354,8 +360,26 @@ export function repoNameFromRemote(url: unknown): string {
   const name = raw.split(/[\/:]/).filter(Boolean).pop() || "";
   return /^[A-Za-z0-9._-]{1,64}$/.test(name) && !opaqueProjectName(name) ? name : "";
 }
+// Which filesystem class a directory is on decides how many git processes may
+// touch it at once. Every poll's git used to start at the same moment, which on
+// NFS is what turned a slow status into a stuck one. The mount table is read
+// once per process and each answer is remembered.
+let mountTable: MountPoint[] | null = null;
+const networkPathMemo = new Map<string, boolean>();
+export function networkFs(path: string): boolean {
+  const cached = networkPathMemo.get(path);
+  if (cached !== undefined) return cached;
+  let real = path;
+  try { real = realpathSync(path); } catch {}
+  if (mountTable === null) mountTable = parseMountInfo(readRegularFileLimited("/proc/self/mountinfo", 1024 * 1024) || "");
+  const result = isNetworkPath(real, mountTable, HOME);
+  if (networkPathMemo.size < 512) networkPathMemo.set(path, result);
+  return result;
+}
+export const gitLimiters = { net: createLimiter(GIT_CAP_NET), local: createLimiter(GIT_CAP_LOCAL) };
+export function gitLimiterFor(cwd: string) { return networkFs(cwd) ? gitLimiters.net : gitLimiters.local; }
 function observationalGit(cwd: string, args: string[], timeoutMs: number): Promise<string> {
-  return run(observationalGitCommand(cwd, args), timeoutMs, undefined, observationalGitEnv());
+  return gitLimiterFor(cwd)(() => run(observationalGitCommand(cwd, args), timeoutMs, undefined, observationalGitEnv()));
 }
 async function fetchJson(url: string, ms = 600): Promise<any> {
   try {
@@ -1720,7 +1744,11 @@ export function inferSessionIdsFromRecent(sessions: any[], recentEntries: any[])
   }
 }
 
-async function githubCiState(cwd: string): Promise<any> {
+// `origin` is the repository's remote URL as the git worker last read it. A poll
+// does not run git, so a repository the worker has not reached yet has no
+// origin (undefined): keep what was there and do not stamp it as checked, or the
+// real answer would wait out the whole ten-minute TTL after the cache arrives.
+async function githubCiState(cwd: string, origin: string | undefined): Promise<any> {
   const previous = prev.ciByRepo && typeof prev.ciByRepo === "object" ? prev.ciByRepo[cwd] : null;
   const checkedAt = Number(previous?.checkedAt || 0);
   if (checkedAt > 0 && now >= checkedAt && now - checkedAt < 10 * 60 * 1000) {
@@ -1732,7 +1760,10 @@ async function githubCiState(cwd: string): Promise<any> {
     currentCiByRepo[cwd] = unavailable;
     return unavailable;
   }
-  const origin = await observationalGit(cwd, ["remote", "get-url", "origin"], 700);
+  if (origin === undefined) {
+    if (previous) currentCiByRepo[cwd] = previous;
+    return previous || { state: "unavailable", checkedAt: now };
+  }
   const repo = githubRepoFromRemote(origin);
   if (!repo) {
     const unavailable = previous ? { ...previous, checkedAt: now, stale: true } : { state: "unavailable", checkedAt: now };
@@ -1771,54 +1802,87 @@ export function repoRootFromFs(cwd: string, has: (path: string) => boolean = exi
   }
   return "";
 }
-// A commit never changes, so its summary is kept by hash across polls instead
-// of asking git for the same line every few seconds. Carried in prev-*.json.
-const COMMIT_CACHE_LIMIT = 48;
-const prevCommits: Record<string, any> = prev.commitCache && typeof prev.commitCache === "object" && !Array.isArray(prev.commitCache) ? prev.commitCache : {};
-const currentCommits: Record<string, any> = {};
+// A commit never changes, so its summary is kept by hash instead of asking git
+// for the same line again. Lives in the shared git cache (git-cache.ts).
 export function commitCacheEntry(value: any, oid: string): any {
   return value && typeof value === "object" && value.hash === oid && typeof value.short === "string" && Number.isFinite(value.committedAt) && typeof value.subject === "string" ? value : null;
 }
-// One `git status` already says whether this is a repository, its branch, its
-// HEAD and what changed, so it goes first and everything else is conditional:
-// the numstat only when a tracked file changed (untracked files are not in
-// `git diff HEAD`), and the commit line only for a HEAD not seen before. A
-// clean repository on a known commit now costs one process per poll, not four.
-async function repoState(cwd: string) {
-  if (!cwd) return { root: "", state: null, changes: null, ci: null };
-  const ciPromise = githubCiState(cwd);
-  const status = await observationalGit(cwd, ["status", "--porcelain=v2", "--branch"], 900);
+
+// ------------------------------------------------------------------ git state
+// A poll NEVER runs git. It reads the shared cache (git-state.json), serves what
+// is there, and asks one detached worker (--refresh-git) to refresh whatever is
+// stale. git-cache.ts has the whole reason; the short version is that `git
+// status` over NFS costs thousands of round trips, so running it every four
+// seconds under a 900 ms budget meant starting and killing it forever.
+const GIT_FILE = "git-state.json";
+const GIT_LOCK = "git-refresh.lock";
+function loadGitCache(): GitCache {
+  return parseGitCache(readRegularFileLimited(join(STATE_DIR, GIT_FILE), 1024 * 1024), text => parseJsonBounded(text, 60_000, 8));
+}
+function saveGitCache(cache: GitCache): void {
+  try { writePrivateStateFile(STATE_DIR, GIT_FILE, JSON.stringify(pruneGitCache(cache, Date.now()))); } catch {}
+}
+
+// Refreshes one directory. Runs in the worker only. One `git status` already
+// says whether this is a repository, its branch, its HEAD and what changed, so
+// it goes first and everything else is conditional: the numstat only when a
+// tracked file changed (untracked files are not in `git diff HEAD`), the commit
+// line only for a HEAD not seen before, the remote only when it was never read
+// or is an hour old. On a network filesystem the status skips the untracked
+// walk and submodules (`-uno --ignore-submodules`): those are the readdir and
+// recursion that cost the most there, so a repository on NFS shows its tracked
+// changes but not its untracked files. GIT_OPTIONAL_LOCKS=0 (observationalGitEnv)
+// already stops status writing a refreshed index back over the mount.
+export async function refreshGitRepo(cwd: string, previous: GitEntry | undefined, commits: Record<string, any>, at = Date.now()): Promise<GitEntry> {
+  const base: GitEntry = previous ? { ...previous } : emptyGitEntry();
+  const root = repoRootFromFs(cwd);
+  // Not inside a repository: nothing to ask git, and nothing to ask again soon.
+  if (!root) return { ...emptyGitEntry(), fetchedAt: at };
+  const location = locateGit(root) || { gitdir: "", commondir: "", headRef: "" };
+  const net = networkFs(root);
+  const located = { root, ...location, net };
+  // Taken before git runs: a commit that lands while a slow status is running
+  // leaves this stamp behind the repository, so the next poll refreshes again
+  // instead of trusting a status that predates it.
+  const stamp = gitStamp(location);
+  const started = performance.now();
+  const budget = net ? GIT_STATUS_TIMEOUT_NET_MS : GIT_STATUS_TIMEOUT_LOCAL_MS;
+  const status = await observationalGit(cwd, ["status", "--porcelain=v2", "--branch", ...(net ? ["-uno", "--ignore-submodules"] : [])], budget);
+  // A repository always prints its branch header, so nothing at all means the
+  // status timed out or failed. Keep the last good answer, remember the failure
+  // and let the backoff keep this repository from being asked again at once.
+  if (!status.trim()) return { ...base, ...located, failedAt: at, failures: Math.min(32, (base.failures || 0) + 1) };
   const parsed = parseGitStatus(status);
   const oid = statusHeadOid(status);
-  const known = oid ? commitCacheEntry(prevCommits[oid], oid) : null;
-  const repoLike = !!status.trim();
-  const [root, diff, commitLine, ci, remote] = await Promise.all([
-    repoRootFromFs(cwd) || (repoLike ? observationalGit(cwd, ["rev-parse", "--show-toplevel"], 700) : Promise.resolve("")),
-    repoLike && parsed && parsed.dirty > parsed.untracked ? observationalGit(cwd, ["diff", "--no-ext-diff", "--no-textconv", "--numstat", "HEAD", "--"], 900) : Promise.resolve(""),
-    repoLike && !known ? observationalGit(cwd, ["log", "-1", "--format=%H%x09%h%x09%ct%x09%s"], 700) : Promise.resolve(""),
-    ciPromise,
-    // Only asked for, and only used, when the directory name is an opaque id.
-    // A worktree shares its config with the repo it came from, so this answers
-    // even for a bare .git the operator never sees.
-    repoLike && opaqueProjectName(basename(cwd)) ? observationalGit(cwd, ["config", "--get", "remote.origin.url"], 700) : Promise.resolve(""),
+  const known = oid ? commitCacheEntry(commits[oid], oid) : null;
+  const askOrigin = base.origin === undefined || at - base.originAt > GIT_ORIGIN_RECHECK_MS;
+  const [diff, commitLine, originOut] = await Promise.all([
+    parsed && parsed.dirty > parsed.untracked ? observationalGit(cwd, ["diff", "--no-ext-diff", "--no-textconv", "--numstat", "HEAD", "--"], budget) : Promise.resolve(""),
+    known ? Promise.resolve("") : observationalGit(cwd, ["log", "-1", "--format=%H%x09%h%x09%ct%x09%s"], budget),
+    askOrigin ? observationalGit(cwd, ["remote", "get-url", "origin"], budget) : Promise.resolve(null),
   ]);
-  const commitFromGit = parseCommitSummary(commitLine);
-  const commitKnown = known ? { hash: known.hash, short: known.short, committedAt: known.committedAt, subject: known.subject } : commitFromGit;
-  if (commitKnown && commitKnown.hash) currentCommits[commitKnown.hash] = commitKnown;
-  const state = parsed, stats = parseDiffNumstat(diff), commit = commitKnown;
+  const origin = originOut === null ? (base.origin ?? "") : originOut.trim();
+  const commit = known ? { hash: known.hash, short: known.short, committedAt: known.committedAt, subject: known.subject } : parseCommitSummary(commitLine);
+  if (commit && commit.hash) commits[commit.hash] = commit;
+  const stats = parseDiffNumstat(diff);
   // Status and numstat cannot tell one edit from another edit of the same
   // size; fold in the mtimes of the reported paths so "seen" tracks content.
-  const stamps = (state?.files || []).slice(0, 12).map(file => { try { return lstatSync(join(root.trim() || cwd, file)).mtimeMs; } catch { return 0; } });
+  const stamps = (parsed?.files || []).slice(0, 12).map(file => { try { return lstatSync(join(root, file)).mtimeMs; } catch { return 0; } });
   const fingerprint = String(Bun.hash(JSON.stringify([commit?.hash || "", status, diff, stamps])));
   return {
-    root: repoLike ? root.trim() : "", state, remoteName: repoNameFromRemote(remote),
-    changes: state || commit ? {
+    ...base, ...located, stamp, fetchedAt: at, failedAt: 0, failures: 0, ms: Math.round(performance.now() - started),
+    origin, originAt: originOut === null ? base.originAt : at,
+    // Only used, and only asked for, when the directory name is an opaque id:
+    // a worktree shares its config with the repo it came from.
+    remoteName: opaqueProjectName(basename(cwd)) ? repoNameFromRemote(origin) : "",
+    state: parsed,
+    changes: parsed || commit ? {
       fingerprint,
-      count: state?.dirty || 0,
-      staged: state?.staged || 0,
-      untracked: state?.untracked || 0,
-      files: state?.files || [],
-      testFiles: (state?.files || []).filter(file => /(^|\/)(test|tests|spec|specs)(\/|\.)|\.(test|spec)\./i.test(file)).length,
+      count: parsed?.dirty || 0,
+      staged: parsed?.staged || 0,
+      untracked: parsed?.untracked || 0,
+      files: parsed?.files || [],
+      testFiles: (parsed?.files || []).filter(file => /(^|\/)(test|tests|spec|specs)(\/|\.)|\.(test|spec)\./i.test(file)).length,
       additions: stats.additions,
       deletions: stats.deletions,
       head: commit?.hash || "",
@@ -1826,8 +1890,93 @@ async function repoState(cwd: string) {
       commitSubject: commit?.subject || "",
       committedAt: commit?.committedAt || 0,
     } : null,
-    ci,
   };
+}
+
+// Claimed with O_EXCL so two polls landing in the same instant (the wallpaper
+// and the overlay each run a collector) cannot both start a worker: the loser
+// finds the claim and leaves. A claim with pid 0 is a worker still being
+// started (gitWorkerAlive treats it as alive for a few seconds).
+function claimGitWorker(): boolean {
+  if (!ensurePrivateStateDir(STATE_DIR)) return false;
+  const path = join(STATE_DIR, GIT_LOCK);
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      const fd = openSync(path, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
+      try { writeSync(fd, JSON.stringify({ pid: 0, at: now })); } finally { closeSync(fd); }
+      return true;
+    } catch (error: any) {
+      if (error?.code !== "EEXIST") return false;
+      const lock = parseJsonBounded(readRegularFileLimited(path, 512) || "", 16, 2);
+      if (gitWorkerAlive(lock, now, processAlive)) return false;
+      try { unlinkSync(path); } catch { return false; }
+    }
+  }
+  return false;
+}
+async function startGitWorker(wanted: string[]): Promise<void> {
+  // INFOMARCHY_SKIP_GIT_REFRESH=1 never starts the worker (the same kind of switch
+  // as INFOMARCHY_SKIP_GITHUB). Fixture runs of this collector still see every
+  // real agent on the machine, and must not go and run git in their checkouts.
+  if (process.env.INFOMARCHY_SKIP_GIT_REFRESH === "1") return;
+  if (!claimGitWorker()) return;
+  try {
+    // Detached with stdout and stderr on /dev/null, like the topic worker: it
+    // outlives this poll and must never hold the pipe the shell reads from.
+    const child = Bun.spawn([process.execPath, import.meta.path, "--refresh-git"], { stdin: "pipe", stdout: "ignore", stderr: "ignore", detached: true });
+    writePrivateStateFile(STATE_DIR, GIT_LOCK, JSON.stringify({ pid: child.pid, at: now }));
+    child.stdin.write(JSON.stringify(wanted));
+    await child.stdin.end();
+    child.unref();
+  } catch { try { unlinkSync(join(STATE_DIR, GIT_LOCK)); } catch {} }
+}
+
+// The worker: one process, bounded lifetime, saves after every repository so a
+// partial pass still shows up on the next poll. A network repository is served
+// one git at a time; local ones two at a time (GIT_CAP_*), and each lane runs
+// its repositories in order, so a slow one delays the ones behind it in its own
+// lane and nobody else's.
+export async function runGitRefresh(wanted: string[], io: {
+  load: () => GitCache; save: (cache: GitCache) => void; clock: () => number;
+  refresh: (cwd: string, previous: GitEntry | undefined, commits: Record<string, any>, at: number) => Promise<GitEntry>;
+  isNetwork: (cwd: string) => boolean;
+  // No new repository is started after this (ms epoch). The worker ends between
+  // repositories instead of being killed in the middle of one, and what it did
+  // not reach is still stale for the next worker.
+  deadline?: number;
+}): Promise<string[]> {
+  const cache = io.load();
+  // Another worker (the other desk's) may have finished some of these already.
+  const due = planGitRefresh(wanted, cache, io.clock());
+  const done: string[] = [];
+  const one = async (cwd: string) => {
+    if (io.deadline !== undefined && io.clock() >= io.deadline) return;
+    cache.repos[cwd] = await io.refresh(cwd, cache.repos[cwd], cache.commits, io.clock());
+    done.push(cwd);
+    io.save(cache);
+  };
+  await Promise.all([
+    runPool(due.filter(cwd => io.isNetwork(cwd)), GIT_CAP_NET, one),
+    runPool(due.filter(cwd => !io.isNetwork(cwd)), GIT_CAP_LOCAL, one),
+  ]);
+  return done;
+}
+async function gitWorkerMain(): Promise<void> {
+  const wanted = parseGitWant(await boundedStream(Bun.stdin.stream(), 64 * 1024));
+  const began = Date.now();
+  const unlock = () => {
+    const lock = parseJsonBounded(readRegularFileLimited(join(STATE_DIR, GIT_LOCK), 512) || "", 16, 2);
+    if (Number(lock?.pid) === process.pid) try { unlinkSync(join(STATE_DIR, GIT_LOCK)); } catch {}
+  };
+  // The hard stop, for a git stuck past its own timeout. It frees the lock first
+  // so the next poll can start a fresh worker at once.
+  const killer = setTimeout(() => { unlock(); process.exit(0); }, GIT_WORKER_MAX_MS);
+  try {
+    if (wanted.length) await runGitRefresh(wanted, {
+      load: loadGitCache, save: saveGitCache, clock: () => Date.now(), refresh: refreshGitRepo, isNetwork: networkFs,
+      deadline: began + GIT_WORKER_MAX_MS - GIT_WORKER_WIND_DOWN_MS,
+    });
+  } finally { clearTimeout(killer); unlock(); }
 }
 
 function processAncestors(pid: number): number[] {
@@ -2211,18 +2360,25 @@ async function liveSessions(pids: number[]) {
     if (!s.busy && s.window && titleLooksBusy(s.window.title) && s.provider === "grok")
       s.window = { ...s.window, title: "" };
   }
-  // Each repo costs four git spawns plus an occasional gh. Bound the fan-out;
-  // sessions beyond the cap simply show no repo state rather than spawning
-  // hundreds of processes per tick.
+  // A poll serves the git cache and never runs git (see git-cache.ts). Bound the
+  // fan-out: sessions beyond the cap simply show no repo state rather than
+  // costing a cache lookup and a CI check each.
   const MAX_REPOS_PER_TICK = 24;
-  const repos = new Map<string, Promise<{ root: string; state: any; changes: any; ci: any; remoteName: string }>>();
+  const cwds: string[] = [];
   for (const session of sessions) {
-    if (!session._cwd || repos.has(session._cwd)) continue;
-    if (repos.size >= MAX_REPOS_PER_TICK) break;
-    repos.set(session._cwd, repoState(session._cwd));
+    if (!session._cwd || cwds.includes(session._cwd)) continue;
+    if (cwds.length >= MAX_REPOS_PER_TICK) break;
+    cwds.push(session._cwd);
   }
+  const gitCache = loadGitCache();
+  const wantedGit = planGitRefresh(cwds, gitCache, now);
+  if (wantedGit.length) await startGitWorker(wantedGit);
+  const ciByCwd = new Map(cwds.map(cwd => [cwd, githubCiState(cwd, gitCache.repos[cwd]?.origin)] as const));
   await Promise.all(sessions.map(async session => {
-    const repo = session._cwd ? await repos.get(session._cwd) : null;
+    const entry = session._cwd && ciByCwd.has(session._cwd) ? gitCache.repos[session._cwd] : null;
+    const repo = session._cwd && ciByCwd.has(session._cwd)
+      ? { root: entry?.root || "", state: entry?.state || null, changes: entry?.changes || null, remoteName: entry?.remoteName || "", ci: await ciByCwd.get(session._cwd) }
+      : null;
     session.repoRoot = repo?.root ? shortPath(repo.root) : "";
     // An agent working in ~/.no-mistakes/worktrees/<hash>/<ULID> was labelled
     // with the ULID, which names nothing. Prefer the repo the worktree came
@@ -4397,7 +4553,6 @@ async function runCollector() {
       opencodeTotals: currentOpencodeTotals,
       grokUsageFiles: currentGrokUsageFiles,
       sessionNotifications: notificationState.tracked,
-      commitCache: Object.fromEntries(Object.entries(currentCommits).slice(0, COMMIT_CACHE_LIMIT)),
     }));
   } catch {}
   await emit(frameSnapshot(snapshot));
@@ -4417,6 +4572,10 @@ if (import.meta.main) {
   try { setPriority(0, 10); } catch {}
   if (process.argv.includes("--refine-topics")) {
     try { await topicWorkerMain(); } catch {}
+    process.exit(0);
+  }
+  if (process.argv.includes("--refresh-git")) {
+    try { await gitWorkerMain(); } catch {}
     process.exit(0);
   }
   try { await runCollector(); }
