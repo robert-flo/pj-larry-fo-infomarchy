@@ -1838,7 +1838,10 @@ export async function refreshGitRepo(cwd: string, previous: GitEntry | undefined
   const root = repoRootFromFs(cwd);
   // Not inside a repository: nothing to ask git, and nothing to ask again soon.
   if (!root) return { ...emptyGitEntry(), fetchedAt: at };
-  const location = locateGit(root) || { gitdir: "", commondir: "", headRef: "" };
+  const location = locateGit(root);
+  // The directory has a `.git` but it is not a repository (an empty shell): same as
+  // no repository, no git, and not asked again soon.
+  if (!location) return { ...emptyGitEntry(), fetchedAt: at };
   const net = networkFs(root);
   const located = { root, ...location, net };
   // Taken before git runs: a commit that lands while a slow status is running

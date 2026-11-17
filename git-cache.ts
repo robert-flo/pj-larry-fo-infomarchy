@@ -159,7 +159,11 @@ export function locateGit(root: string): GitLocation | null {
   let commondir = gitdir;
   const common = readSmall(join(gitdir, "commondir"));
   if (common && common.trim()) commondir = isAbsolute(common.trim()) ? common.trim() : resolve(gitdir, common.trim());
-  const head = readSmall(join(gitdir, "HEAD")) || "";
+  // A `.git` directory with no HEAD is an empty shell, not a repository (git itself
+  // refuses it). There are plenty on a shared project tree, and asking git about
+  // one only ever fails.
+  const head = readSmall(join(gitdir, "HEAD"));
+  if (head === null) return null;
   const ref = head.match(/^ref:\s*(\S+)/);
   return { gitdir, commondir, headRef: ref ? ref[1] : "" };
 }

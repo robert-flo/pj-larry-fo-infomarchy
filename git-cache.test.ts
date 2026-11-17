@@ -9,7 +9,7 @@ import {
   parseGitCache, parseGitWant, parseMountInfo, planGitRefresh, pruneGitCache, runPool, sanitizeGitEntry,
   type GitCache, type GitEntry,
 } from "./git-cache";
-import { gitLimiters, gitLimiterFor, runGitRefresh } from "./collector.ts";
+import { gitLimiters, gitLimiterFor, refreshGitRepo, runGitRefresh } from "./collector.ts";
 
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 const entryAt = (over: Partial<GitEntry> = {}): GitEntry => ({ ...emptyGitEntry(), root: "/r", gitdir: "/r/.git", commondir: "/r/.git", headRef: "refs/heads/main", stamp: "1|2|3|-", fetchedAt: 1_000_000, ...over });
@@ -149,6 +149,24 @@ describe("the stamp that invalidates a cached answer", () => {
     expect(gitStamp(null)).toBe("");
     expect(gitStamp({ gitdir: "" })).toBe("");
     expect(gitStamp({ gitdir: "/g", commondir: "/g", headRef: "" }, () => 1)).toBe("1|1|-|1");
+  });
+
+  test("an empty .git directory is not a repository: no location, and the refresh asks git nothing", async () => {
+    const base = mkdtempSync(join(tmpdir(), "infomarchy-shell-"));
+    try {
+      const shell = join(base, "shell"), real = join(base, "real");
+      mkdirSync(join(shell, ".git"), { recursive: true });
+      mkdirSync(join(real, ".git"), { recursive: true }); writeFileSync(join(real, ".git", "HEAD"), "ref: refs/heads/main\n");
+      expect(locateGit(shell)).toBeNull();
+      expect(locateGit(real)!.headRef).toBe("refs/heads/main");
+      // Had git been asked, a "repository" with no HEAD would come back as a failure with a root.
+      const entry = await refreshGitRepo(shell, undefined, {}, 5_000_000);
+      expect(entry.root).toBe("");
+      expect(entry.failedAt).toBe(0);
+      expect(entry.failures).toBe(0);
+      expect(entry.fetchedAt).toBe(5_000_000);
+      expect(gitCacheVerdict(entry, 5_000_000 + 60_000, "")).toBe("fresh");
+    } finally { rmSync(base, { recursive: true, force: true }); }
   });
 
   test("a linked worktree is stamped through its own gitdir and the shared refs", () => {
